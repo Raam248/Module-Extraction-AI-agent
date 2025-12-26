@@ -31,70 +31,22 @@ def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Extract modules and submodules from documentation URLs",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python module_extractor_cli.py --urls https://help.zluri.com/
-  python module_extractor_cli.py --urls https://help.zluri.com/ https://www.chargebee.com/docs/2.0/
-  python module_extractor_cli.py --urls https://help.zluri.com/ --provider local
-        """
     )
 
-    parser.add_argument(
-        "--urls",
-        nargs="+",
-        required=True,
-        help="One or more documentation URLs to process"
-    )
-
-    parser.add_argument(
-        "--provider",
-        choices=["openai", "anthropic", "local"],
-        default="local",
-        help="LLM provider to use (openai | anthropic | local)"
-    )
-
-    parser.add_argument(
-        "--model",
-        help="Optional model override (e.g. gpt-4o, llama3)"
-    )
-
-    parser.add_argument(
-        "--max-depth",
-        type=int,
-        default=2,
-        help="Maximum crawl depth (default: 2)"
-    )
-
-    parser.add_argument(
-        "--max-pages",
-        type=int,
-        default=30,
-        help="Maximum pages to crawl (default: 30)"
-    )
-
-    parser.add_argument(
-        "--delay",
-        type=float,
-        default=1.0,
-        help="Delay between requests (default: 1.0s)"
-    )
-
-    parser.add_argument(
-        "--output",
-        help="Output file path (default: output/modules_<timestamp>.json)"
-    )
-
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Enable verbose logging"
-    )
+    parser.add_argument("--urls", nargs="+", required=True)
+    parser.add_argument("--provider", choices=["openai", "anthropic", "local"], default="local")
+    parser.add_argument("--model", help="Optional model override")
+    parser.add_argument("--max-depth", type=int, default=2)
+    parser.add_argument("--max-pages", type=int, default=30)
+    parser.add_argument("--delay", type=float, default=1.0)
+    parser.add_argument("--output", help="Output JSON path")
+    parser.add_argument("--verbose", action="store_true")
 
     return parser.parse_args()
 
 
 # -------------------------------
-# MAIN FUNCTION
+# MAIN
 # -------------------------------
 def main():
     args = parse_arguments()
@@ -105,9 +57,10 @@ def main():
     logger.info("=" * 60)
     logger.info("Pulse - Module Extraction AI Agent")
     logger.info("=" * 60)
-    logger.info(f"URLs to process: {len(args.urls)}")
+
     for url in args.urls:
-        logger.info(f"  - {url}")
+        logger.info(f"URL: {url}")
+
     logger.info(f"Provider: {args.provider}")
     logger.info(f"Max depth: {args.max_depth}")
     logger.info(f"Max pages: {args.max_pages}")
@@ -115,32 +68,30 @@ def main():
 
     try:
         # -------------------------------
-        # Step 1: Crawl
+        # STEP 1 — Crawl
         # -------------------------------
         logger.info("\n[1/2] Crawling documentation...")
 
         crawler = DocumentationCrawler(
             max_depth=args.max_depth,
             max_pages=args.max_pages,
-            delay=args.delay
+            delay=args.delay,
         )
 
-        all_crawled_data = []
+        all_pages = []
+        for i, url in enumerate(args.urls, 1):
+            logger.info(f"Crawling {i}/{len(args.urls)}: {url}")
+            pages = crawler.crawl(url)
+            all_pages.extend(pages)
 
-        for idx, url in enumerate(args.urls, 1):
-            logger.info(f"\nCrawling URL {idx}/{len(args.urls)}: {url}")
-            crawled = crawler.crawl(url)
-            all_crawled_data.extend(crawled)
-            logger.info(f"  → Extracted content from {len(crawled)} pages")
-
-        if not all_crawled_data:
-            logger.error("No pages were successfully crawled.")
+        if not all_pages:
+            logger.error("No content was crawled.")
             sys.exit(1)
 
-        logger.info(f"\n✓ Total pages crawled: {len(all_crawled_data)}")
+        logger.info(f"✓ Total pages crawled: {len(all_pages)}")
 
         # -------------------------------
-        # Step 2: Extract modules
+        # STEP 2 — Extract
         # -------------------------------
         logger.info("\n[2/2] Extracting modules with AI...")
 
@@ -149,7 +100,7 @@ def main():
             model=args.model
         )
 
-        results = extractor.extract_modules(all_crawled_data)
+        results = extractor.extract_modules(all_pages)
 
         if not results:
             logger.error("Module extraction failed or returned empty results.")
@@ -158,21 +109,26 @@ def main():
         logger.info(f"✓ Extracted {len(results)} modules")
 
         # -------------------------------
-        # Display summary
+        # SAFE DISPLAY
         # -------------------------------
         logger.info("\n" + "=" * 60)
         logger.info("EXTRACTION SUMMARY")
         logger.info("=" * 60)
 
-        for i, module in enumerate(results, 1):
-            logger.info(f"{i}. {module['module']}")
-            logger.info(f"   Description: {module['Description']}")
-            logger.info(f"   Submodules ({len(module['Submodules'])}):")
-            for name in module["Submodules"]:
-                logger.info(f"     - {name}")
+        for idx, module in enumerate(results, 1):
+            name = module.get("module", "Unnamed Module")
+            desc = module.get("Description", "No description")
+            subs = module.get("Submodules", {})
+
+            logger.info(f"{idx}. {name}")
+            logger.info(f"   Description: {desc}")
+            logger.info(f"   Submodules ({len(subs)}):")
+
+            for sub in subs:
+                logger.info(f"     - {sub}")
 
         # -------------------------------
-        # Save output
+        # SAVE OUTPUT
         # -------------------------------
         if args.output:
             output_path = Path(args.output)
@@ -182,19 +138,18 @@ def main():
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_path = output_dir / f"modules_{timestamp}.json"
 
-        extractor.save_results(results, str(output_path))
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
 
-        logger.info("\n" + "=" * 60)
+        logger.info("=" * 60)
         logger.info(f"✓ Results saved to: {output_path}")
         logger.info("=" * 60)
 
-        print("\n" + "=" * 60)
-        print("JSON OUTPUT")
-        print("=" * 60)
+        print("\nJSON OUTPUT:")
         print(json.dumps(results, indent=2))
 
     except KeyboardInterrupt:
-        logger.warning("\nOperation cancelled by user.")
+        logger.warning("Interrupted by user.")
         sys.exit(1)
 
     except Exception as e:

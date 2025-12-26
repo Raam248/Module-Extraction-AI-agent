@@ -88,7 +88,7 @@ class ModuleExtractor:
         logger.info(f"ModuleExtractor initialized with provider={self.provider}")
 
     # --------------------------------------------------
-    # CONTENT PREP
+    # CONTENT PREPARATION
     # --------------------------------------------------
 
     def prepare_content_for_analysis(self, crawled_data: List[Dict]) -> str:
@@ -134,11 +134,17 @@ class ModuleExtractor:
             else:
                 response = self._call_local_llm(prompt)
 
-            return self._parse_llm_response(response)
+            parsed = self._parse_llm_response(response)
+
+            if parsed:
+                return parsed
+
+            logger.warning("Falling back to heuristic extraction")
+            return self._fallback_extract(crawled_data)
 
         except Exception as e:
             logger.error(f"Module extraction failed: {e}")
-            return []
+            return self._fallback_extract(crawled_data)
 
     # --------------------------------------------------
     # PROMPT
@@ -146,30 +152,24 @@ class ModuleExtractor:
 
     def _create_prompt(self, content: str) -> str:
         return f"""
-You are analyzing software documentation to identify product modules and submodules.
+You are an AI that extracts structured information from documentation.
 
-RULES:
-- Identify 5–10 major modules
-- Each module should have 2–8 submodules
-- Use only provided content
-- Do NOT hallucinate
-- Be concise and accurate
+Return ONLY valid JSON.
+Do NOT include markdown or explanation.
 
-DOCUMENTATION:
-{content}
-
-OUTPUT FORMAT (JSON ONLY):
-
+Expected format:
 [
   {{
     "module": "Module Name",
-    "Description": "Description of this module",
+    "Description": "Description",
     "Submodules": {{
-      "Submodule Name": "Description",
-      "Submodule Name 2": "Description"
+      "Submodule Name": "Description"
     }}
   }}
 ]
+
+DOCUMENTATION:
+{content}
 """
 
     # --------------------------------------------------
@@ -208,7 +208,7 @@ OUTPUT FORMAT (JSON ONLY):
 
         try:
             result = subprocess.run(
-                f'ollama run {self.model}',
+                ["ollama", "run", self.model],
                 input=prompt,
                 capture_output=True,
                 text=True,
@@ -218,7 +218,8 @@ OUTPUT FORMAT (JSON ONLY):
             )
 
             if result.returncode != 0:
-                logger.error(f"Ollama error: {result.stderr}")
+                logger.error("Ollama execution failed")
+                logger.error(result.stderr)
                 return ""
 
             return result.stdout
@@ -233,33 +234,57 @@ OUTPUT FORMAT (JSON ONLY):
 
     def _parse_llm_response(self, response: str) -> List[Dict]:
         try:
-            response = response.strip()
-
-            if response.startswith("```"):
-                response = response.split("```")[1]
-
-            parsed = json.loads(response)
-
-            if not isinstance(parsed, list):
+            if not response:
                 return []
 
-            return [m for m in parsed if self._validate_module(m)]
+            try:
+                parsed = json.loads(response)
+                if isinstance(parsed, list):
+                    return parsed
+            except:
+                pass
 
-        except Exception as e:
-            logger.error(f"Failed to parse LLM response: {e}")
+            start = response.find("[")
+            end = response.rfind("]")
+
+            if start != -1 and end != -1:
+                try:
+                    parsed = json.loads(response[start:end + 1])
+                    if isinstance(parsed, list):
+                        return parsed
+                except:
+                    pass
+
+            return []
+
+        except Exception:
             return []
 
     # --------------------------------------------------
-    # VALIDATION
+    # FALLBACK EXTRACTION
     # --------------------------------------------------
 
-    def _validate_module(self, module: Dict) -> bool:
-        return (
-            isinstance(module, dict)
-            and "module" in module
-            and "Description" in module
-            and isinstance(module.get("Submodules"), dict)
-        )
+    def _fallback_extract(self, crawled_data: List[Dict]) -> List[Dict]:
+        modules = {}
+
+        for page in crawled_data:
+            for section in page.get("sections", []):
+                title = section.get("heading", "").strip()
+                if not title:
+                    continue
+
+                if title not in modules:
+                    modules[title] = {
+                        "module": title,
+                        "Description": f"Information related to {title}.",
+                        "Submodules": {}
+                    }
+
+                for content in section.get("content", []):
+                    key = content[:60]
+                    modules[title]["Submodules"][key] = content[:200]
+
+        return list(modules.values())
 
     # --------------------------------------------------
     # SAVE
