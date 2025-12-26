@@ -87,9 +87,9 @@ class ModuleExtractor:
 
         logger.info(f"ModuleExtractor initialized with provider={self.provider}")
 
-    # --------------------------------------------------
-    # CONTENT PREPARATION
-    # --------------------------------------------------
+    # ==================================================
+    # CONTENT PREP
+    # ==================================================
 
     def prepare_content_for_analysis(self, crawled_data: List[Dict]) -> str:
         blocks = []
@@ -109,9 +109,9 @@ class ModuleExtractor:
 
         return "\n".join(blocks)
 
-    # --------------------------------------------------
+    # ==================================================
     # MAIN EXTRACTION
-    # --------------------------------------------------
+    # ==================================================
 
     def extract_modules(self, crawled_data: List[Dict]) -> List[Dict]:
         if not crawled_data:
@@ -139,31 +139,32 @@ class ModuleExtractor:
             if parsed:
                 return parsed
 
-            logger.warning("Falling back to heuristic extraction")
+            logger.warning("LLM failed — using fallback extractor.")
             return self._fallback_extract(crawled_data)
 
         except Exception as e:
             logger.error(f"Module extraction failed: {e}")
             return self._fallback_extract(crawled_data)
 
-    # --------------------------------------------------
+    # ==================================================
     # PROMPT
-    # --------------------------------------------------
+    # ==================================================
 
     def _create_prompt(self, content: str) -> str:
         return f"""
-You are an AI that extracts structured information from documentation.
+You are a documentation parser.
 
 Return ONLY valid JSON.
-Do NOT include markdown or explanation.
+No markdown.
+No explanations.
 
-Expected format:
+FORMAT:
 [
   {{
     "module": "Module Name",
-    "Description": "Description",
+    "Description": "Short description",
     "Submodules": {{
-      "Submodule Name": "Description"
+      "Submodule name": "Description"
     }}
   }}
 ]
@@ -172,9 +173,9 @@ DOCUMENTATION:
 {content}
 """
 
-    # --------------------------------------------------
+    # ==================================================
     # LLM CALLS
-    # --------------------------------------------------
+    # ==================================================
 
     def _call_openai(self, prompt: str) -> str:
         logger.info("Calling OpenAI API")
@@ -182,10 +183,10 @@ DOCUMENTATION:
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": "You are a technical documentation analyst."},
+                {"role": "system", "content": "You extract structured data."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.3,
+            temperature=0.2,
             max_tokens=4000
         )
 
@@ -197,7 +198,7 @@ DOCUMENTATION:
         response = self.client.messages.create(
             model=self.model,
             max_tokens=4000,
-            temperature=0.3,
+            temperature=0.2,
             messages=[{"role": "user", "content": prompt}]
         )
 
@@ -218,53 +219,60 @@ DOCUMENTATION:
             )
 
             if result.returncode != 0:
-                logger.error("Ollama execution failed")
                 logger.error(result.stderr)
                 return ""
 
-            return result.stdout
+            return result.stdout.strip()
 
         except Exception as e:
             logger.error(f"Local LLM execution failed: {e}")
             return ""
 
-    # --------------------------------------------------
+    # ==================================================
     # PARSING
-    # --------------------------------------------------
+    # ==================================================
 
     def _parse_llm_response(self, response: str) -> List[Dict]:
-        try:
-            if not response:
-                return []
+        if not response:
+            return []
 
+        # Attempt clean JSON
+        try:
+            parsed = json.loads(response)
+            if isinstance(parsed, list):
+                return self._validate(parsed)
+        except:
+            pass
+
+        # Try extracting JSON block
+        start = response.find("[")
+        end = response.rfind("]")
+        if start != -1 and end != -1:
             try:
-                parsed = json.loads(response)
-                if isinstance(parsed, list):
-                    return parsed
+                parsed = json.loads(response[start:end + 1])
+                return self._validate(parsed)
             except:
                 pass
 
-            start = response.find("[")
-            end = response.rfind("]")
+        return []
 
-            if start != -1 and end != -1:
-                try:
-                    parsed = json.loads(response[start:end + 1])
-                    if isinstance(parsed, list):
-                        return parsed
-                except:
-                    pass
+    def _validate(self, modules: List[Dict]) -> List[Dict]:
+        valid = []
+        for m in modules:
+            if isinstance(m, dict) and "module" in m:
+                m.setdefault("Description", "")
+                m.setdefault("Submodules", {})
+                if isinstance(m["Submodules"], dict):
+                    valid.append(m)
+        return valid
 
-            return []
-
-        except Exception:
-            return []
-
-    # --------------------------------------------------
+    # ==================================================
     # FALLBACK EXTRACTION
-    # --------------------------------------------------
+    # ==================================================
 
     def _fallback_extract(self, crawled_data: List[Dict]) -> List[Dict]:
+        logger.warning("Using heuristic fallback extraction")
+
         modules = {}
 
         for page in crawled_data:
@@ -286,9 +294,9 @@ DOCUMENTATION:
 
         return list(modules.values())
 
-    # --------------------------------------------------
+    # ==================================================
     # SAVE
-    # --------------------------------------------------
+    # ==================================================
 
     def save_results(self, modules: List[Dict], output_path: str):
         try:
