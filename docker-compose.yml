@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  pulse-app:
+    build: .
+    container_name: pulse-documentation-intelligence
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    volumes:
+      - ./output:/app/output
+    restart: unless-stopped
+    environment:
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_SERVER_PORT=8501
